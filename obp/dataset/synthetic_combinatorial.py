@@ -3,23 +3,19 @@
 
 """Class for Generating Synthetic Logged Bandit Data for Combinatorial Bandits."""
 from dataclasses import dataclass
-from itertools import combinations
 from typing import Callable
 from typing import Optional
 from typing import Tuple
 
 import numpy as np
 from scipy.special import comb
-from scipy.stats import truncnorm
 from sklearn.utils import check_random_state
 from sklearn.utils import check_scalar
 
 from ..types import BanditFeedback
 from ..utils import check_array
 from ..utils import sigmoid
-from ..utils import softmax
 from .base import BaseBanditDataset
-from .reward_type import RewardType
 
 
 @dataclass
@@ -31,94 +27,68 @@ class SyntheticCombinatorialBanditDataset(BaseBanditDataset):
     This class generates logged bandit feedback for Contextual Combinatorial Bandits (CCB),
     where the action space consists of all possible subsets of a candidate action set.
 
-    Unlike slate/ranking problems where position matters and individual slot rewards are observed,
-    CCB involves:
-    1. Selecting a subset of actions (order doesn't matter)
-    2. Observing a single reward for the entire combination
-    3. Using factored action space: binary indicators m_l ∈ {∅, a_l} for each action
+    Unlike slate/ranking problems:
+    1. Order doesn't matter (subset selection, not ranking)
+    2. Single binary reward for the entire combination
+    3. Factored action space with binary indicators
 
     The reward function is decomposed into:
     - Main effect: q_main(x, s_main) from main actions
-    - Residual effect: Δq_residual(x, s, s_main) from auxiliary actions
+    - Residual effect: q_residual(x, s) from all actions + interactions
 
     Parameters
     -----------
     n_actions: int
-        Number of candidate actions in the base action set A.
-        The combinatorial action space will have size 2^n_actions.
+        Number of candidate actions. Action space size = 2^n_actions.
 
     n_main_actions: int, default=None
-        Number of main actions that contribute most to the reward.
-        If None, defaults to n_actions // 2.
+        Number of main actions. If None, defaults to n_actions // 2.
 
     dim_context: int, default=1
         Number of dimensions of context vectors.
 
-    reward_type: str, default='binary'
-        Type of reward variable, which must be either 'binary' or 'continuous'.
-        When 'binary', rewards are sampled from the Bernoulli distribution.
-        When 'continuous', rewards are sampled from the truncated Normal distribution.
-
     main_effect_weight: float, default=0.7
-        Weight of main effect in total reward (between 0 and 1).
-        Total reward = main_effect_weight * main_effect + (1 - main_effect_weight) * residual_effect.
+        Weight of main effect in [0, 1].
+        q(x,s) = α*q_main + (1-α)*q_residual
 
     interaction_strength: float, default=0.3
-        Strength of interaction effects between actions (between 0 and 1).
-        Higher values mean stronger synergistic or antagonistic effects.
+        Strength of pairwise interaction effects in [0, 1].
 
     base_reward_function: Callable, default=None
-        Function defining the expected reward for each individual action given context,
-        i.e., f: X × A → R.
-        If None, context-independent rewards will be sampled from uniform distribution.
+        Function f: X × A → R for individual action rewards.
+        If None, uses context-independent uniform random values.
 
     behavior_policy_type: str, default='independent'
-        Type of behavior policy for selecting combinations:
-        - 'independent': Each action is included independently based on its marginal probability
-        - 'epsilon_greedy': Epsilon-greedy policy based on expected rewards
-        - 'boltzmann': Boltzmann exploration with temperature parameter
+        Type of behavior policy:
+        - 'independent': Each action selected independently
+        - 'epsilon_greedy': ε-greedy exploration
 
     epsilon: float, default=0.1
-        Exploration parameter for epsilon-greedy behavior policy (only used when behavior_policy_type='epsilon_greedy').
+        Exploration rate for epsilon-greedy (0 ≤ ε ≤ 1).
 
-    temperature: float, default=1.0
-        Temperature parameter for Boltzmann exploration (only used when behavior_policy_type='boltzmann').
-
-    min_subset_size: int, default=0
-        Minimum size of selected subset (number of actions to include).
+    min_subset_size: int, default=1
+        Minimum number of actions to select.
 
     max_subset_size: int, default=None
-        Maximum size of selected subset. If None, defaults to n_actions.
+        Maximum number of actions to select. If None, = n_actions.
 
     random_state: int, default=12345
-        Controls the random seed in sampling synthetic combinatorial bandit data.
+        Random seed.
 
     dataset_name: str, default='synthetic_combinatorial_bandit_dataset'
-        Name of the dataset.
+        Dataset name.
 
     Examples
     ----------
-
-    .. code-block:: python
-
-        >>> from obp.dataset import SyntheticCombinatorialBanditDataset
-
-        # Generate synthetic combinatorial bandit feedback
-        >>> dataset = SyntheticCombinatorialBanditDataset(
-                n_actions=5,
-                n_main_actions=2,
-                dim_context=3,
-                reward_type='binary',
-                main_effect_weight=0.7,
-                interaction_strength=0.3,
-                behavior_policy_type='independent',
-                random_state=12345
-            )
-        >>> bandit_feedback = dataset.obtain_batch_bandit_feedback(n_rounds=100)
-        >>> bandit_feedback.keys()
-        dict_keys(['n_rounds', 'n_actions', 'context', 'action_context',
-                   'action', 'action_binary', 'subset_size', 'main_action_flags',
-                   'reward', 'expected_reward', 'pscore', 'pscore_factorized'])
+    >>> from obp.dataset import SyntheticCombinatorialBanditDataset
+    >>> dataset = SyntheticCombinatorialBanditDataset(
+            n_actions=5,
+            n_main_actions=2,
+            dim_context=3,
+            behavior_policy_type='independent',
+            random_state=12345
+        )
+    >>> bandit_feedback = dataset.obtain_batch_bandit_feedback(n_rounds=100)
 
     References
     ------------
@@ -130,14 +100,12 @@ class SyntheticCombinatorialBanditDataset(BaseBanditDataset):
     n_actions: int
     n_main_actions: Optional[int] = None
     dim_context: int = 1
-    reward_type: str = RewardType.BINARY.value
     main_effect_weight: float = 0.7
     interaction_strength: float = 0.3
     base_reward_function: Optional[Callable[[np.ndarray, np.ndarray], np.ndarray]] = None
     behavior_policy_type: str = "independent"
     epsilon: float = 0.1
-    temperature: float = 1.0
-    min_subset_size: int = 0
+    min_subset_size: int = 1
     max_subset_size: Optional[int] = None
     random_state: int = 12345
     dataset_name: str = "synthetic_combinatorial_bandit_dataset"
@@ -154,41 +122,27 @@ class SyntheticCombinatorialBanditDataset(BaseBanditDataset):
         check_scalar(self.main_effect_weight, "main_effect_weight", float, min_val=0.0, max_val=1.0)
         check_scalar(self.interaction_strength, "interaction_strength", float, min_val=0.0, max_val=1.0)
         check_scalar(self.epsilon, "epsilon", float, min_val=0.0, max_val=1.0)
-        check_scalar(self.temperature, "temperature", float, min_val=0.0)
-        check_scalar(self.min_subset_size, "min_subset_size", int, min_val=0, max_val=self.n_actions)
+        check_scalar(self.min_subset_size, "min_subset_size", int, min_val=1, max_val=self.n_actions)
 
         if self.max_subset_size is None:
             self.max_subset_size = self.n_actions
         check_scalar(self.max_subset_size, "max_subset_size", int, min_val=self.min_subset_size, max_val=self.n_actions)
 
-        if self.reward_type not in ["binary", "continuous"]:
+        if self.behavior_policy_type not in ["independent", "epsilon_greedy"]:
             raise ValueError(
-                f"`reward_type` must be either 'binary' or 'continuous', but {self.reward_type} is given."
-            )
-
-        if self.behavior_policy_type not in ["independent", "epsilon_greedy", "boltzmann"]:
-            raise ValueError(
-                f"`behavior_policy_type` must be one of 'independent', 'epsilon_greedy', or 'boltzmann', "
+                f"`behavior_policy_type` must be 'independent' or 'epsilon_greedy', "
                 f"but {self.behavior_policy_type} is given."
             )
 
         self.random_ = check_random_state(self.random_state)
-
-        # Set reward bounds for continuous rewards
-        if self.reward_type == "continuous":
-            self.reward_min = 0
-            self.reward_max = 1e10
-            self.reward_std = 1.0
-
-        # One-hot encoding for each action
         self.action_context = np.eye(self.n_actions, dtype=int)
 
-        # Randomly select which actions are "main" actions
+        # Randomly select main actions
         self.main_action_indices = self.random_.choice(
             self.n_actions, size=self.n_main_actions, replace=False
         )
 
-        # Generate interaction weight matrix for action pairs
+        # Generate interaction weight matrix
         self.interaction_weights = self._generate_interaction_weights()
 
     def _generate_interaction_weights(self) -> np.ndarray:
@@ -309,12 +263,8 @@ class SyntheticCombinatorialBanditDataset(BaseBanditDataset):
             (1.0 - self.main_effect_weight) * residual_effect
         )
 
-        # Apply sigmoid for binary rewards to get probabilities in [0, 1]
-        if self.reward_type == "binary":
-            expected_reward = sigmoid(expected_reward)
-        else:
-            # Clip to ensure non-negative
-            expected_reward = np.maximum(expected_reward, 0)
+        # Apply sigmoid to get probabilities in [0, 1]
+        expected_reward = sigmoid(expected_reward)
 
         return expected_reward
 
@@ -322,34 +272,20 @@ class SyntheticCombinatorialBanditDataset(BaseBanditDataset):
         self,
         expected_reward: np.ndarray,
     ) -> np.ndarray:
-        """Sample rewards given expected rewards.
+        """Sample binary rewards from Bernoulli distribution.
 
         Parameters
         -----------
         expected_reward: array-like, shape (n_rounds,)
-            Expected rewards.
+            Expected rewards (probabilities in [0, 1]).
 
         Returns
         --------
         reward: array-like, shape (n_rounds,)
-            Sampled rewards.
+            Binary rewards (0 or 1).
         """
         check_array(array=expected_reward, name="expected_reward", expected_dim=1)
-
-        if self.reward_type == "binary":
-            reward = self.random_.binomial(n=1, p=expected_reward)
-        elif self.reward_type == "continuous":
-            mean = expected_reward
-            a = (self.reward_min - mean) / self.reward_std
-            b = (self.reward_max - mean) / self.reward_std
-            reward = truncnorm.rvs(
-                a=a, b=b, loc=mean, scale=self.reward_std,
-                random_state=self.random_state
-            )
-        else:
-            raise NotImplementedError
-
-        return reward
+        return self.random_.binomial(n=1, p=expected_reward)
 
     def sample_action_and_obtain_pscore(
         self,
@@ -450,53 +386,7 @@ class SyntheticCombinatorialBanditDataset(BaseBanditDataset):
                     1 - inclusion_probs[action_binary[i] == 0]
                 )
 
-        elif self.behavior_policy_type == "boltzmann":
-            # Boltzmann exploration over subsets
-            # This is computationally expensive for large action spaces
-
-            for i in range(n_rounds):
-                # For computational efficiency, sample subset size first
-                subset_size = self.random_.randint(self.min_subset_size, self.max_subset_size + 1)
-
-                # Calculate scores for all possible subsets of this size
-                # (This is expensive - in practice, use approximations)
-                if subset_size <= 5 and self.n_actions <= 10:
-                    # Enumerate all subsets
-                    all_subsets = list(combinations(range(self.n_actions), subset_size))
-                    subset_scores = []
-
-                    for subset in all_subsets:
-                        temp_binary = np.zeros(self.n_actions)
-                        temp_binary[list(subset)] = 1
-                        score = (individual_rewards[i] * temp_binary).sum()
-                        subset_scores.append(score)
-
-                    subset_scores = np.array(subset_scores)
-                    subset_probs = softmax(subset_scores / self.temperature)
-
-                    # Sample subset
-                    selected_subset_idx = self.random_.choice(len(all_subsets), p=subset_probs)
-                    selected_subset = all_subsets[selected_subset_idx]
-                    action_binary[i, list(selected_subset)] = 1
-                    pscore[i] = subset_probs[selected_subset_idx]
-                else:
-                    # Approximation: sample actions with Boltzmann probabilities
-                    action_probs = softmax(individual_rewards[i] / self.temperature)
-                    selected_indices = self.random_.choice(
-                        self.n_actions, size=subset_size, replace=False, p=action_probs
-                    )
-                    action_binary[i, selected_indices] = 1
-                    pscore[i] = np.prod(action_probs[selected_indices])
-
-                # Factorized pscore
-                inclusion_probs = sigmoid(individual_rewards[i])
-                pscore_factorized[i] = np.prod(
-                    inclusion_probs[action_binary[i] == 1]
-                ) * np.prod(
-                    1 - inclusion_probs[action_binary[i] == 0]
-                )
-
-        # Ensure no zero probabilities (for numerical stability)
+        # Ensure no zero probabilities (numerical stability)
         pscore = np.maximum(pscore, 1e-10)
         pscore_factorized = np.maximum(pscore_factorized, 1e-10)
 
