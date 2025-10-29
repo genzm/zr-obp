@@ -58,10 +58,10 @@ class SyntheticCombinatorialBanditDataset(BaseBanditDataset):
         Function f: X × A → R for individual action rewards.
         If None, uses context-independent uniform random values.
 
-    behavior_policy_function: Callable, default=None
+    behavior_policy_function: Callable
         Function that returns logits for behavior policy: (context, action_context) → logits.
-        If provided, this will be used instead of individual_rewards for action selection.
         Example: linear_behavior_policy from obp.dataset
+        Required parameter.
 
     behavior_policy_type: str, default='independent'
         Type of behavior policy:
@@ -85,11 +85,12 @@ class SyntheticCombinatorialBanditDataset(BaseBanditDataset):
 
     Examples
     ----------
-    >>> from obp.dataset import SyntheticCombinatorialBanditDataset
+    >>> from obp.dataset import SyntheticCombinatorialBanditDataset, linear_behavior_policy
     >>> dataset = SyntheticCombinatorialBanditDataset(
             n_actions=5,
             n_main_actions=2,
             dim_context=3,
+            behavior_policy_function=linear_behavior_policy,
             behavior_policy_type='independent',
             random_state=12345
         )
@@ -103,12 +104,12 @@ class SyntheticCombinatorialBanditDataset(BaseBanditDataset):
     """
 
     n_actions: int
+    behavior_policy_function: Callable[[np.ndarray, np.ndarray], np.ndarray]
     n_main_actions: Optional[int] = None
     dim_context: int = 1
     main_effect_weight: float = 0.7
     interaction_strength: float = 0.3
     base_reward_function: Optional[Callable[[np.ndarray, np.ndarray], np.ndarray]] = None
-    behavior_policy_function: Optional[Callable[[np.ndarray, np.ndarray], np.ndarray]] = None
     behavior_policy_type: str = "independent"
     epsilon: float = 0.1
     min_subset_size: int = 1
@@ -296,18 +297,14 @@ class SyntheticCombinatorialBanditDataset(BaseBanditDataset):
     def sample_action_and_obtain_pscore(
         self,
         context: np.ndarray,
-        individual_rewards: np.ndarray,
         n_rounds: int,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Sample action combinations and calculate propensity scores.
+        """Sample action combinations using behavior policy.
 
         Parameters
         -----------
         context: array-like, shape (n_rounds, dim_context)
             Context vectors.
-
-        individual_rewards: array-like, shape (n_rounds, n_actions)
-            Expected reward for each individual action.
 
         n_rounds: int
             Number of rounds.
@@ -327,22 +324,17 @@ class SyntheticCombinatorialBanditDataset(BaseBanditDataset):
         pscore = np.zeros(n_rounds)
         pscore_factorized = np.zeros(n_rounds)
 
-        # Calculate inclusion probabilities
-        if self.behavior_policy_function is not None:
-            # Use custom behavior policy function (returns logits)
-            behavior_logits = self.behavior_policy_function(
-                context=context,
-                action_context=self.action_context,
-                random_state=self.random_state
-            )
-            inclusion_probs = sigmoid(behavior_logits)
-        else:
-            # Use individual rewards as logits
-            inclusion_probs = sigmoid(individual_rewards)
+        # Calculate behavior policy logits
+        behavior_logits = self.behavior_policy_function(
+            context=context,
+            action_context=self.action_context,
+            random_state=self.random_state
+        )
+        inclusion_probs = sigmoid(behavior_logits)
 
         if self.behavior_policy_type == "independent":
-            # Each action is selected independently with probability based on its expected reward
-            # p(a_l = 1) = sigmoid(reward_l) or sigmoid(behavior_logits)
+            # Each action is selected independently
+            # p(a_l = 1) = sigmoid(behavior_logits[i, l])
 
             for i in range(n_rounds):
                 for j in range(self.n_actions):
@@ -390,9 +382,9 @@ class SyntheticCombinatorialBanditDataset(BaseBanditDataset):
                     ])
                     pscore[i] = self.epsilon / n_valid_subsets
                 else:
-                    # Greedy: select top actions based on individual rewards
+                    # Greedy: select top actions based on behavior logits
                     greedy_size = min(self.max_subset_size, max(self.min_subset_size, self.n_main_actions))
-                    top_indices = np.argsort(individual_rewards[i])[-greedy_size:]
+                    top_indices = np.argsort(behavior_logits[i])[-greedy_size:]
                     action_binary[i, top_indices] = 1
                     pscore[i] = 1.0 - self.epsilon
 
@@ -439,13 +431,9 @@ class SyntheticCombinatorialBanditDataset(BaseBanditDataset):
         # Sample contexts
         context = self.random_.normal(size=(n_rounds, self.dim_context))
 
-        # Calculate individual expected rewards
-        individual_rewards = self.calc_individual_expected_rewards(context)
-
-        # Sample actions and calculate propensity scores
+        # Sample actions using behavior policy
         action_binary, pscore, pscore_factorized = self.sample_action_and_obtain_pscore(
             context=context,
-            individual_rewards=individual_rewards,
             n_rounds=n_rounds,
         )
 
