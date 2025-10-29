@@ -58,6 +58,11 @@ class SyntheticCombinatorialBanditDataset(BaseBanditDataset):
         Function f: X × A → R for individual action rewards.
         If None, uses context-independent uniform random values.
 
+    behavior_policy_function: Callable, default=None
+        Function that returns logits for behavior policy: (context, action_context) → logits.
+        If provided, this will be used instead of individual_rewards for action selection.
+        Example: linear_behavior_policy from obp.dataset
+
     behavior_policy_type: str, default='independent'
         Type of behavior policy:
         - 'independent': Each action selected independently
@@ -103,6 +108,7 @@ class SyntheticCombinatorialBanditDataset(BaseBanditDataset):
     main_effect_weight: float = 0.7
     interaction_strength: float = 0.3
     base_reward_function: Optional[Callable[[np.ndarray, np.ndarray], np.ndarray]] = None
+    behavior_policy_function: Optional[Callable[[np.ndarray, np.ndarray], np.ndarray]] = None
     behavior_policy_type: str = "independent"
     epsilon: float = 0.1
     min_subset_size: int = 1
@@ -321,10 +327,22 @@ class SyntheticCombinatorialBanditDataset(BaseBanditDataset):
         pscore = np.zeros(n_rounds)
         pscore_factorized = np.zeros(n_rounds)
 
+        # Calculate inclusion probabilities
+        if self.behavior_policy_function is not None:
+            # Use custom behavior policy function (returns logits)
+            behavior_logits = self.behavior_policy_function(
+                context=context,
+                action_context=self.action_context,
+                random_state=self.random_state
+            )
+            inclusion_probs = sigmoid(behavior_logits)
+        else:
+            # Use individual rewards as logits
+            inclusion_probs = sigmoid(individual_rewards)
+
         if self.behavior_policy_type == "independent":
             # Each action is selected independently with probability based on its expected reward
-            # p(a_l = 1) = sigmoid(reward_l)
-            inclusion_probs = sigmoid(individual_rewards)
+            # p(a_l = 1) = sigmoid(reward_l) or sigmoid(behavior_logits)
 
             for i in range(n_rounds):
                 for j in range(self.n_actions):
@@ -379,11 +397,10 @@ class SyntheticCombinatorialBanditDataset(BaseBanditDataset):
                     pscore[i] = 1.0 - self.epsilon
 
                 # Factorized pscore (independent assumption)
-                inclusion_probs = sigmoid(individual_rewards[i])
                 pscore_factorized[i] = np.prod(
-                    inclusion_probs[action_binary[i] == 1]
+                    inclusion_probs[i, action_binary[i] == 1]
                 ) * np.prod(
-                    1 - inclusion_probs[action_binary[i] == 0]
+                    1 - inclusion_probs[i, action_binary[i] == 0]
                 )
 
         # Ensure no zero probabilities (numerical stability)
