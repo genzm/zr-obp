@@ -8,7 +8,6 @@ from typing import Optional
 from typing import Tuple
 
 import numpy as np
-from scipy.special import comb
 from sklearn.utils import check_random_state
 from sklearn.utils import check_scalar
 
@@ -62,14 +61,8 @@ class SyntheticCombinatorialBanditDataset(BaseBanditDataset):
         Function that returns logits for behavior policy: (context, action_context) → logits.
         Example: linear_behavior_policy from obp.dataset
         Required parameter.
-
-    behavior_policy_type: str, default='independent'
-        Type of behavior policy:
-        - 'independent': Each action selected independently
-        - 'epsilon_greedy': ε-greedy exploration
-
-    epsilon: float, default=0.1
-        Exploration rate for epsilon-greedy (0 ≤ ε ≤ 1).
+        Each action is sampled independently using Bernoulli trials with probabilities
+        derived from sigmoid(logits).
 
     min_subset_size: int, default=1
         Minimum number of actions to select.
@@ -91,7 +84,6 @@ class SyntheticCombinatorialBanditDataset(BaseBanditDataset):
             n_main_actions=2,
             dim_context=3,
             behavior_policy_function=linear_behavior_policy,
-            behavior_policy_type='independent',
             random_state=12345
         )
     >>> bandit_feedback = dataset.obtain_batch_bandit_feedback(n_rounds=100)
@@ -110,8 +102,6 @@ class SyntheticCombinatorialBanditDataset(BaseBanditDataset):
     main_effect_weight: float = 0.7
     interaction_strength: float = 0.3
     base_reward_function: Optional[Callable[[np.ndarray, np.ndarray], np.ndarray]] = None
-    behavior_policy_type: str = "independent"
-    epsilon: float = 0.1
     min_subset_size: int = 1
     max_subset_size: Optional[int] = None
     random_state: int = 12345
@@ -128,18 +118,11 @@ class SyntheticCombinatorialBanditDataset(BaseBanditDataset):
 
         check_scalar(self.main_effect_weight, "main_effect_weight", float, min_val=0.0, max_val=1.0)
         check_scalar(self.interaction_strength, "interaction_strength", float, min_val=0.0, max_val=1.0)
-        check_scalar(self.epsilon, "epsilon", float, min_val=0.0, max_val=1.0)
         check_scalar(self.min_subset_size, "min_subset_size", int, min_val=1, max_val=self.n_actions)
 
         if self.max_subset_size is None:
             self.max_subset_size = self.n_actions
         check_scalar(self.max_subset_size, "max_subset_size", int, min_val=self.min_subset_size, max_val=self.n_actions)
-
-        if self.behavior_policy_type not in ["independent", "epsilon_greedy"]:
-            raise ValueError(
-                f"`behavior_policy_type` must be 'independent' or 'epsilon_greedy', "
-                f"but {self.behavior_policy_type} is given."
-            )
 
         self.random_ = check_random_state(self.random_state)
         self.action_context = np.eye(self.n_actions, dtype=int)
@@ -332,68 +315,33 @@ class SyntheticCombinatorialBanditDataset(BaseBanditDataset):
         )
         inclusion_probs = sigmoid(behavior_logits)
 
-        if self.behavior_policy_type == "independent":
-            # Each action is selected independently
-            # p(a_l = 1) = sigmoid(behavior_logits[i, l])
+        # Each action is selected independently using Bernoulli trials
+        # p(a_l = 1) = sigmoid(behavior_logits[i, l])
+        for i in range(n_rounds):
+            for j in range(self.n_actions):
+                # Sample whether to include this action
+                include = self.random_.binomial(1, inclusion_probs[i, j])
+                action_binary[i, j] = include
 
-            for i in range(n_rounds):
-                for j in range(self.n_actions):
-                    # Sample whether to include this action
-                    include = self.random_.binomial(1, inclusion_probs[i, j])
-                    action_binary[i, j] = include
-
-                # Ensure subset size constraints
-                subset_size = action_binary[i].sum()
-                if subset_size < self.min_subset_size or subset_size > self.max_subset_size:
-                    # Resample to satisfy constraints
-                    valid_size = self.random_.randint(self.min_subset_size, self.max_subset_size + 1)
-                    selected_indices = self.random_.choice(
-                        self.n_actions, size=valid_size, replace=False,
-                        p=inclusion_probs[i] / inclusion_probs[i].sum()
-                    )
-                    action_binary[i] = 0
-                    action_binary[i, selected_indices] = 1
-
-                # Calculate factorized propensity score
-                pscore_factorized[i] = np.prod(
-                    inclusion_probs[i, action_binary[i] == 1]
-                ) * np.prod(
-                    1 - inclusion_probs[i, action_binary[i] == 0]
+            # Ensure subset size constraints
+            subset_size = action_binary[i].sum()
+            if subset_size < self.min_subset_size or subset_size > self.max_subset_size:
+                # Resample to satisfy constraints
+                valid_size = self.random_.randint(self.min_subset_size, self.max_subset_size + 1)
+                selected_indices = self.random_.choice(
+                    self.n_actions, size=valid_size, replace=False,
+                    p=inclusion_probs[i] / inclusion_probs[i].sum()
                 )
-                pscore[i] = pscore_factorized[i]
+                action_binary[i] = 0
+                action_binary[i, selected_indices] = 1
 
-        elif self.behavior_policy_type == "epsilon_greedy":
-            # Epsilon-greedy: with probability epsilon, select random subset;
-            # otherwise select greedy subset based on expected combination reward
-
-            for i in range(n_rounds):
-                if self.random_.random() < self.epsilon:
-                    # Random subset
-                    subset_size = self.random_.randint(self.min_subset_size, self.max_subset_size + 1)
-                    selected_indices = self.random_.choice(
-                        self.n_actions, size=subset_size, replace=False
-                    )
-                    action_binary[i, selected_indices] = 1
-
-                    # Uniform probability over all valid subsets
-                    n_valid_subsets = sum([
-                        comb(self.n_actions, k, exact=True)
-                        for k in range(self.min_subset_size, self.max_subset_size + 1)
-                    ])
-                    pscore[i] = self.epsilon / n_valid_subsets
-                else:
-                    # Greedy: select top actions based on behavior logits
-                    greedy_size = min(self.max_subset_size, max(self.min_subset_size, self.n_main_actions))
-                    top_indices = np.argsort(behavior_logits[i])[-greedy_size:]
-                    action_binary[i, top_indices] = 1
-                    pscore[i] = 1.0 - self.epsilon
-
-                # Factorized pscore (independent assumption)
-                pscore_factorized[i] = np.prod(
-                    inclusion_probs[i, action_binary[i] == 1]
-                ) * np.prod(
-                    1 - inclusion_probs[i, action_binary[i] == 0]
-                )
+            # Calculate factorized propensity score
+            pscore_factorized[i] = np.prod(
+                inclusion_probs[i, action_binary[i] == 1]
+            ) * np.prod(
+                1 - inclusion_probs[i, action_binary[i] == 0]
+            )
+            pscore[i] = pscore_factorized[i]
 
         # Ensure no zero probabilities (numerical stability)
         pscore = np.maximum(pscore, 1e-10)

@@ -15,7 +15,6 @@ dataset1 = SyntheticCombinatorialBanditDataset(
     behavior_policy_function=linear_behavior_policy,
     n_main_actions=2,
     dim_context=3,
-    behavior_policy_type='independent',
     random_state=42
 )
 
@@ -35,7 +34,6 @@ dataset2 = SyntheticCombinatorialBanditDataset(
     behavior_policy_function=linear_behavior_policy,
     n_main_actions=2,
     dim_context=3,
-    behavior_policy_type='independent',
     random_state=123  # Different seed
 )
 
@@ -56,7 +54,7 @@ print(f"  Test 1 pscore range: [{feedback1['pscore'].min():.6f}, {feedback1['psc
 print(f"  Test 2 pscore range: [{feedback2['pscore'].min():.6f}, {feedback2['pscore'].max():.6f}]")
 
 print("\n" + "=" * 60)
-print("Test 4: Larger dataset with epsilon-greedy")
+print("Test 4: Larger dataset with subset size constraints")
 print("=" * 60)
 
 dataset3 = SyntheticCombinatorialBanditDataset(
@@ -64,8 +62,6 @@ dataset3 = SyntheticCombinatorialBanditDataset(
     behavior_policy_function=linear_behavior_policy,
     n_main_actions=3,
     dim_context=5,
-    behavior_policy_type='epsilon_greedy',
-    epsilon=0.2,
     min_subset_size=2,
     max_subset_size=6,
     random_state=123
